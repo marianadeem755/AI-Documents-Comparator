@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from typing import List
 import uuid
 import pandas as pd
+import time
 
 # Load environment variables
 load_dotenv()
@@ -541,8 +542,11 @@ Followed by:
         )
         
         placeholder = st.empty()
+        progress_bar = st.progress(0.0)
         text = ""
         chunk_count = 0
+        start_time = time.time()
+        max_duration = 120  # 2 minutes timeout
         
         if api_type == "gemini":
             response = model.generate_content(
@@ -554,8 +558,14 @@ Followed by:
                 if hasattr(chunk, 'text'):
                     text += chunk.text
                 chunk_count += 1
-                if chunk_count % 5 == 0:
-                    placeholder.text(f"Processing... received {chunk_count} chunks")
+                elapsed_time = time.time() - start_time
+                progress = min(chunk_count / 100, 0.95)  # Assume ~100 chunks max, cap at 95%
+                progress_bar.progress(progress)
+                if chunk_count % 3 == 0:  # Update more frequently
+                    placeholder.text(f"Processing... received {chunk_count} chunks ({elapsed_time:.1f}s)")
+                if elapsed_time > max_duration:
+                    placeholder.text("⚠️ Processing is taking longer than expected. Please wait or try again.")
+                    break
         else:  # OpenAI
             response = model.chat.completions.create(
                 model="gpt-4o-mini",
@@ -568,12 +578,27 @@ Followed by:
                 if chunk.choices[0].delta.content:
                     text += chunk.choices[0].delta.content
                 chunk_count += 1
-                if chunk_count % 5 == 0:
-                    placeholder.text(f"Processing... received {chunk_count} chunks")
+                elapsed_time = time.time() - start_time
+                progress = min(chunk_count / 100, 0.95)  # Assume ~100 chunks max, cap at 95%
+                progress_bar.progress(progress)
+                if chunk_count % 3 == 0:  # Update more frequently
+                    placeholder.text(f"Processing... received {chunk_count} chunks ({elapsed_time:.1f}s)")
+                if elapsed_time > max_duration:
+                    placeholder.text("⚠️ Processing is taking longer than expected. Please wait or try again.")
+                    break
         
         placeholder.text("Parsing response...")
-        parsed_output = output_parser.parse(text)
+        progress_bar.progress(1.0)
+        try:
+            parsed_output = output_parser.parse(text)
+        except Exception as e:
+            st.error(f"❌ Error parsing AI response: {str(e)}")
+            st.session_state['partial_text'] = text  # Store partial result
+            placeholder.text("⚠️ Failed to parse response. Partial results saved. Please try again.")
+            return None
+        
         placeholder.empty()
+        progress_bar.empty()
         
         parsed_output_dict = parsed_output.dict(by_alias=True)
         
@@ -594,6 +619,7 @@ Followed by:
         return parsed_output_dict
     except Exception as e:
         st.error(f"❌ Error in AI comparison: {str(e)}")
+        st.session_state['partial_text'] = text  # Store partial result
         return None
 
 # Clean <br> tags from text
@@ -683,7 +709,7 @@ def generate_pdf_report(ai_analysis, original_filename, revised_filename, metric
              Paragraph(row["Original"], body_style), 
              Paragraph(row["Revised"], body_style), 
              Paragraph(row["Description"], body_style)]
-            for row in metrics_table
+            for row in metrics_tablepd
         ]
         metrics_col_widths = [100, 120, 120, 200]
         metrics_table_obj = Table(metrics_data, colWidths=metrics_col_widths, repeatRows=1, splitByRow=1)
@@ -775,7 +801,7 @@ def generate_docx_report(ai_analysis, original_filename, revised_filename, metri
 
         doc = Document()
         title = doc.add_heading('Document Comparison Report', 0)
-        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title.alignment = WD_ALIGN_PARAGRAPHavl.CENTER
 
         doc.add_paragraph(f"Original Document: {original_filename}")
         doc.add_paragraph(f"Revised Document: {revised_filename}")
@@ -948,6 +974,8 @@ def main():
         st.session_state['ai_analysis'] = None
     if 'analysis_date' not in st.session_state:
         st.session_state['analysis_date'] = None
+    if 'partial_text' not in st.session_state:
+        st.session_state['partial_text'] = None
 
     st.markdown("""
     <div class="main-header">
@@ -1093,7 +1121,7 @@ def main():
             """, unsafe_allow_html=True)
             
             if st.button("🔍 COMPARE DOCUMENTS", type="primary", use_container_width=True):
-                with st.spinner("🤖 AI is analyzing the differences... This may take a moment."):
+                with st.spinner("🤖 AI is analyzing the differences... Please wait, this may take a few moments."):
                     metrics_table = generate_comparison_table(
                         original_text,
                         revised_text,
@@ -1116,6 +1144,10 @@ def main():
                             }]
                         st.session_state['ai_analysis'] = ai_analysis
                         st.session_state['analysis_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        st.warning("⚠️ Analysis incomplete. Please try clicking 'Compare Documents' again.")
+                        if st.session_state.get('partial_text'):
+                            st.info("Partial results saved. Retrying may complete the analysis.")
 
             if st.session_state['ai_analysis'] and st.session_state['metrics_table']:
                 st.markdown('<div class="comparison-result">', unsafe_allow_html=True)

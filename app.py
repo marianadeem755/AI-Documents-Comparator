@@ -289,15 +289,14 @@ def highlight_keywords(text):
     return text
 
 # Initialize Gemini AI
-@st.cache_resource
-def initialize_ai():
+@st.cache_data
+def initialize_ai(_api_key):
     try:
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            st.error("❌ Gemini API key not found! Please add it to your .env file")
+        if not _api_key:
+            st.error("❌ Gemini API key not found! Please add it to your .env file or Streamlit Cloud secrets")
             return None
         
-        genai.configure(api_key=api_key)
+        genai.configure(api_key=_api_key)
         model = genai.GenerativeModel('gemini-2.5-flash')
         return model
     except Exception as e:
@@ -910,6 +909,14 @@ def calculate_similarity(text1, text2):
 
 # Main application
 def main():
+    # Initialize session state variables
+    if 'metrics_table' not in st.session_state:
+        st.session_state['metrics_table'] = None
+    if 'ai_analysis' not in st.session_state:
+        st.session_state['ai_analysis'] = None
+    if 'analysis_date' not in st.session_state:
+        st.session_state['analysis_date'] = None
+
     st.markdown("""
     <div class="main-header">
         <h1>🤖 AI Document Comparator</h1>
@@ -917,14 +924,20 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    model = initialize_ai()
+    # Load API key
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        st.error("❌ GEMINI_API_KEY not found. Please set it in Streamlit Cloud secrets or .env file.")
+        st.stop()
+
+    # Initialize AI model
+    model = initialize_ai(api_key)
     if not model:
         st.stop()
 
     with st.sidebar:
         st.markdown("### 🔧 System Status")
         if st.button("🔍 Test API Connection"):
-            api_key = os.getenv("GEMINI_API_KEY")
             if api_key:
                 st.success("✅ API key found")
                 try:
@@ -1064,7 +1077,7 @@ def main():
                         st.session_state['ai_analysis'] = ai_analysis
                         st.session_state['analysis_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            if 'ai_analysis' in st.session_state and 'metrics_table' in st.session_state:
+            if st.session_state['ai_analysis'] and st.session_state['metrics_table']:
                 st.markdown('<div class="comparison-result">', unsafe_allow_html=True)
                 st.markdown("## 📊 Comparison Metrics Table")
                 st.dataframe(st.session_state['metrics_table'], use_container_width=True)
@@ -1109,7 +1122,7 @@ def main():
                     key="revised_preview"
                 )
             
-            if 'ai_analysis' in st.session_state and 'metrics_table' in st.session_state:
+            if st.session_state['ai_analysis'] and st.session_state['metrics_table']:
                 st.markdown("## 💾 Download Analysis Report")
                 metrics_table = st.session_state['metrics_table']
                 ai_analysis = st.session_state['ai_analysis']

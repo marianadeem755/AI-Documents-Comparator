@@ -141,7 +141,3 @@ streamlit run app.py
 * **Reports**: ReportLab, python-docx
 * **Utilities**: Pydantic, difflib
 * **Environment Config**: dotenv
-
-
-Would you like me to also **add screenshots/demo GIF placeholders** (like `![App Screenshot](assets/demo.png)`) in the README so it looks even more professional for GitHub?
-```

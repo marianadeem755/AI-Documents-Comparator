@@ -1,5 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
+import openai
 import PyPDF2
 import io
 import docx
@@ -288,20 +289,23 @@ def highlight_keywords(text):
         )
     return text
 
-# Initialize Gemini AI
+# Initialize AI (Gemini with OpenAI fallback)
 @st.cache_data
-def initialize_ai(_api_key):
+def initialize_ai(_gemini_api_key, _openai_api_key):
     try:
-        if not _api_key:
-            st.error("❌ Gemini API key not found! Please add it to your .env file or Streamlit Cloud secrets")
-            return None
-        
-        genai.configure(api_key=_api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        return model
+        if _gemini_api_key:
+            genai.configure(api_key=_gemini_api_key)
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            return model, "gemini"
+        elif _openai_api_key:
+            client = openai.OpenAI(api_key=_openai_api_key)
+            return client, "openai"
+        else:
+            st.error("❌ Neither Gemini nor OpenAI API key found! Please add one to your .env file or Streamlit Cloud secrets")
+            return None, None
     except Exception as e:
         st.error(f"❌ Error initializing AI: {str(e)}")
-        return None
+        return None, None
 
 # Define Pydantic model for comparison table entries
 class ComparisonEntry(BaseModel):
@@ -457,7 +461,7 @@ def normalize_change_type(change_type):
     return "Modified"
 
 # Compare documents using AI with LangChain parser
-def compare_documents_ai(original_text, revised_text, model):
+def compare_documents_ai(original_text, revised_text, model, api_type):
     try:
         prompt_template = PromptTemplate(
             input_variables=["original_text", "revised_text"],
@@ -536,12 +540,40 @@ Followed by:
             revised_text=revised_text
         )
         
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(temperature=0.1, top_p=0.9)
-        )
+        placeholder = st.empty()
+        text = ""
+        chunk_count = 0
         
-        parsed_output = output_parser.parse(response.text)
+        if api_type == "gemini":
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(temperature=0.1, top_p=0.9),
+                stream=True
+            )
+            for chunk in response:
+                if hasattr(chunk, 'text'):
+                    text += chunk.text
+                chunk_count += 1
+                if chunk_count % 5 == 0:
+                    placeholder.text(f"Processing... received {chunk_count} chunks")
+        else:  # OpenAI
+            response = model.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                top_p=0.9,
+                stream=True
+            )
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    text += chunk.choices[0].delta.content
+                chunk_count += 1
+                if chunk_count % 5 == 0:
+                    placeholder.text(f"Processing... received {chunk_count} chunks")
+        
+        placeholder.text("Parsing response...")
+        parsed_output = output_parser.parse(text)
+        placeholder.empty()
         
         parsed_output_dict = parsed_output.dict(by_alias=True)
         
@@ -698,7 +730,7 @@ def generate_pdf_report(ai_analysis, original_filename, revised_filename, metric
             ('FONTSIZE', (0, 1), (-1, -1), 6),
             ('LEFTPADDING', (0, 0), (-1, -1), 1),
             ('RIGHTPADDING', (0, 0), (-1, -1), 1),
-            ('TOPPADDING', (0, 0), (-1, -1), 1),
+            ('TOPPADING', (0, 0), (-1, -1), 1),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -924,26 +956,34 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # Load API key
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        st.error("❌ GEMINI_API_KEY not found. Please set it in Streamlit Cloud secrets or .env file.")
+    # Load API keys
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not gemini_api_key and not openai_api_key:
+        st.error("❌ Neither GEMINI_API_KEY nor OPENAI_API_KEY found. Please set one in Streamlit Cloud secrets or .env file.")
         st.stop()
 
     # Initialize AI model
-    model = initialize_ai(api_key)
+    model, api_type = initialize_ai(gemini_api_key, openai_api_key)
     if not model:
         st.stop()
 
     with st.sidebar:
         st.markdown("### 🔧 System Status")
         if st.button("🔍 Test API Connection"):
-            if api_key:
-                st.success("✅ API key found")
+            if gemini_api_key or openai_api_key:
+                st.success(f"✅ {'Gemini' if gemini_api_key else 'OpenAI'} API key found")
                 try:
-                    genai.configure(api_key=api_key)
-                    test_model = genai.GenerativeModel('gemini-2.5-flash')
-                    test_response = test_model.generate_content("Test connection.")
+                    if gemini_api_key:
+                        genai.configure(api_key=gemini_api_key)
+                        test_model = genai.GenerativeModel('gemini-2.5-flash')
+                        test_response = test_model.generate_content("Test connection.")
+                    else:
+                        test_client = openai.OpenAI(api_key=openai_api_key)
+                        test_response = test_client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[{"role": "user", "content": "Test connection."}]
+                        )
                     st.success("✅ API connection successful!")
                 except Exception as e:
                     st.error(f"❌ API connection failed: {str(e)}")
@@ -966,7 +1006,7 @@ def main():
         st.markdown("- JSON (.json) - JSON structured data")
         
         st.markdown("### ⚡ Key Features")
-        st.markdown("- AI-Powered Analysis - Advanced comparison using Gemini AI with LangChain parsing")
+        st.markdown("- AI-Powered Analysis - Advanced comparison using Gemini or OpenAI with LangChain parsing")
         st.markdown("- Comprehensive Reports - Detailed change analysis with validated comparison table")
         st.markdown("- Multiple Export Formats - PDF, DOCX, TXT, JSON")
         st.markdown("- Visual Diff View - Technical section-by-section comparison")
@@ -1062,7 +1102,7 @@ def main():
                     )
                     st.session_state['metrics_table'] = metrics_table
                     
-                    ai_analysis = compare_documents_ai(original_text, revised_text, model)
+                    ai_analysis = compare_documents_ai(original_text, revised_text, model, api_type)
                     if ai_analysis:
                         if not ai_analysis['comparison_table']:
                             ai_analysis['comparison_table'] = [{
@@ -1215,7 +1255,7 @@ def main():
 
     st.markdown("""
     <div style="text-align: center; color: #666; margin-top: 2rem; padding: 1rem;">
-        <p><strong>🤖 AI Document Comparator</strong> | Powered by Google Gemini AI and LangChain | Built with Streamlit</p>
+        <p><strong>🤖 AI Document Comparator</strong> | Powered by Google Gemini or OpenAI and LangChain | Built with Streamlit</p>
         <p>Compare any documents - contracts, reports, articles, code, essays, manuals, JSON data, and more!</p>
         <p><em>Universal document comparison for all your analysis needs</em></p>
     </div>

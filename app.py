@@ -24,7 +24,7 @@ import fitz  # pymupdf
 from PIL import Image
 import pytesseract
 from langchain_core.prompts import PromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 from typing import List
 import uuid
